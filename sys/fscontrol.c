@@ -27,6 +27,84 @@ with this program. If not, see <http://www.gnu.org/licenses/>.
 #pragma alloc_text(PAGE, DokanOplockRequest)
 #endif
 
+const WCHAR* DokanGetOplockControlCodeName(ULONG FsControlCode) {
+  switch (FsControlCode) {
+    case FSCTL_REQUEST_OPLOCK:
+      return L"FSCTL_REQUEST_OPLOCK";
+    case FSCTL_REQUEST_OPLOCK_LEVEL_1:
+      return L"FSCTL_REQUEST_OPLOCK_LEVEL_1";
+    case FSCTL_REQUEST_OPLOCK_LEVEL_2:
+      return L"FSCTL_REQUEST_OPLOCK_LEVEL_2";
+    case FSCTL_REQUEST_BATCH_OPLOCK:
+      return L"FSCTL_REQUEST_BATCH_OPLOCK";
+    case FSCTL_REQUEST_FILTER_OPLOCK:
+      return L"FSCTL_REQUEST_FILTER_OPLOCK";
+    case FSCTL_OPLOCK_BREAK_ACKNOWLEDGE:
+      return L"FSCTL_OPLOCK_BREAK_ACKNOWLEDGE";
+    case FSCTL_OPBATCH_ACK_CLOSE_PENDING:
+      return L"FSCTL_OPBATCH_ACK_CLOSE_PENDING";
+    case FSCTL_OPLOCK_BREAK_NOTIFY:
+      return L"FSCTL_OPLOCK_BREAK_NOTIFY";
+    case FSCTL_OPLOCK_BREAK_ACK_NO_2:
+      return L"FSCTL_OPLOCK_BREAK_ACK_NO_2";
+    default:
+      return L"<unknown>";
+  }
+}
+
+void DokanMaybeLogOplockRequest(__in PDOKAN_LOGGER Logger,
+                                __in PDokanFCB Fcb,
+                                __in ULONG FsControlCode,
+                                __in ULONG OplockCount,
+                                __in BOOLEAN AcquiredFcb,
+                                __in BOOLEAN AcquiredVcb,
+                                __in ULONG RequestedLevel,
+                                __in ULONG Flags) {
+  // These calls log to the fixed-size DokanOlockDebugInfo and not to a file, so
+  // we enable them no matter what.
+  OplockDebugRecordRequest(Fcb, FsControlCode, RequestedLevel);
+  if (Flags & REQUEST_OPLOCK_INPUT_FLAG_ACK) {
+    OplockDebugRecordFlag(Fcb, DOKAN_OPLOCK_DEBUG_GENERIC_ACKNOWLEDGEMENT);
+  }
+  // Don't log via the Event Log unless flagged on (which should never be the
+  // case by default).
+  if (!Fcb->Vcb->Dcb->LogOplocks) {
+    return;
+  }
+  if (FsControlCode == FSCTL_REQUEST_OPLOCK) {
+    DokanLogInfo(Logger, L"Oplock request FSCTL_REQUEST_OPLOCK for file %wZ;"
+                 L" oplock count %d; acquired FCB %d; acquired VCB %d;"
+                 L" level = %I32x; flags = %I32x",
+                 &Fcb->FileName, OplockCount, AcquiredFcb, AcquiredVcb,
+                 RequestedLevel, Flags);
+    return;
+  }
+  DokanLogInfo(Logger, L"Oplock request %s for file %wZ; oplock count %d;"
+               L" acquired FCB %d; acquired VCB %d",
+               DokanGetOplockControlCodeName(FsControlCode),
+               &Fcb->FileName, OplockCount, AcquiredFcb, AcquiredVcb);
+}
+
+void DokanMaybeLogOplockResult(__in PDOKAN_LOGGER Logger,
+                               __in PDokanFCB Fcb,
+                               __in ULONG FsControlCode,
+                               __in ULONG RequestedLevel,
+                               __in ULONG Flags,
+                               __in NTSTATUS Status) {
+  if (!Fcb->Vcb->Dcb->LogOplocks) {
+    return;
+  }
+  if (FsControlCode == FSCTL_REQUEST_OPLOCK) {
+    DokanLogInfo(Logger, L"Oplock result for FSCTL_REQUEST_OPLOCK for file %wZ;"
+                 L" level = %I32x; flags = %I32x; status = 0x%I32x",
+                 &Fcb->FileName, RequestedLevel, Flags, Status);
+    return;
+  }
+  DokanLogInfo(Logger, L"Oplock result for %s for file %wZ; status = 0x%I32x",
+               DokanGetOplockControlCodeName(FsControlCode), &Fcb->FileName,
+               Status);
+}
+
 NTSTATUS DokanOplockRequest(__in PIRP *pIrp) {
   NTSTATUS Status = STATUS_SUCCESS;
   ULONG FsControlCode;
@@ -42,6 +120,7 @@ NTSTATUS DokanOplockRequest(__in PIRP *pIrp) {
   PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
   BOOLEAN AcquiredVcb = FALSE;
+  BOOLEAN AcquiredFcb = FALSE;
 
 #if (NTDDI_VERSION >= NTDDI_WIN7)
   PREQUEST_OPLOCK_INPUT_BUFFER InputBuffer = NULL;
@@ -70,7 +149,7 @@ NTSTATUS DokanOplockRequest(__in PIRP *pIrp) {
     DDbgPrint("    DokanOplockRequest STATUS_INVALID_PARAMETER\n");
     return STATUS_INVALID_PARAMETER;
   }
-
+  OplockDebugRecordMajorFunction(Fcb, IRP_MJ_FILE_SYSTEM_CONTROL);
   Vcb = Fcb->Vcb;
   if (Vcb == NULL || Vcb->Identifier.Type != VCB) {
     DDbgPrint("    DokanOplockRequest STATUS_INVALID_PARAMETER\n");
@@ -81,6 +160,10 @@ NTSTATUS DokanOplockRequest(__in PIRP *pIrp) {
   Dcb = Vcb->Dcb;
   if (Dcb == NULL || Dcb->Identifier.Type != DCB) {
     return STATUS_INVALID_PARAMETER;
+  }
+
+  if (!Dcb->EnableOplocks) {
+    return STATUS_NOT_SUPPORTED;
   }
 
 #if (NTDDI_VERSION >= NTDDI_WIN7)
@@ -139,7 +222,10 @@ NTSTATUS DokanOplockRequest(__in PIRP *pIrp) {
 #endif
     ) {
 
-      AcquiredVcb = ExAcquireResourceSharedLite(&(Fcb->Vcb->Resource), TRUE);
+      DokanVCBLockRO(Fcb->Vcb);
+      AcquiredVcb = TRUE;
+      DokanFCBLockRW(Fcb);
+      AcquiredFcb = TRUE;
 
 #if (NTDDI_VERSION >= NTDDI_WIN7)
       if (!Dcb->FileLockInUserMode && FsRtlOplockIsSharedRequest(Irp)) {
@@ -180,7 +266,8 @@ NTSTATUS DokanOplockRequest(__in PIRP *pIrp) {
                    FlagOn(InputBuffer->Flags, REQUEST_OPLOCK_INPUT_FLAG_ACK))
 #endif
     ) {
-
+      DokanFCBLockRO(Fcb);
+      AcquiredFcb = TRUE;
 #if (NTDDI_VERSION >= NTDDI_WIN7)
     } else if (FsControlCode == FSCTL_REQUEST_OPLOCK) {
       //
@@ -218,11 +305,21 @@ NTSTATUS DokanOplockRequest(__in PIRP *pIrp) {
       __leave;
     }
 
+    ULONG level = 0;
+    ULONG flags = 0;
+    if (FsControlCode == FSCTL_REQUEST_OPLOCK) {
+      level = InputBuffer->RequestedOplockLevel;
+      flags = InputBuffer->Flags;
+    }
+    DokanMaybeLogOplockRequest(&logger, Fcb, FsControlCode, OplockCount,
+                               AcquiredFcb, AcquiredVcb, level, flags);
+
     //
     //  Call the FsRtl routine to grant/acknowledge oplock.
     //
     Status = FsRtlOplockFsctrl(DokanGetFcbOplock(Fcb), Irp, OplockCount);
-
+    DokanMaybeLogOplockResult(&logger, Fcb, FsControlCode, level, flags,
+                              Status);
     //
     //  Once we call FsRtlOplockFsctrl, we no longer own the IRP and we should
     //  not complete it.
@@ -234,8 +331,11 @@ NTSTATUS DokanOplockRequest(__in PIRP *pIrp) {
     //
     //  Release all of our resources
     //
+    if (AcquiredFcb) {
+      DokanFCBUnlock(Fcb);
+    }
     if (AcquiredVcb) {
-      ExReleaseResourceLite(&(Fcb->Vcb->Resource));
+      DokanVCBUnlock(Fcb->Vcb);
     }
 
     DDbgPrint("    DokanOplockRequest return 0x%x\n", Status);

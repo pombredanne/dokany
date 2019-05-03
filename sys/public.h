@@ -100,6 +100,7 @@ with this program. If not, see <http://www.gnu.org/licenses/>.
 #define DOKAN_WRITE_TO_END_OF_FILE 128
 #define DOKAN_NOCACHE 256
 #define DOKAN_FILE_CHANGE_LAST_WRITE 512
+#define DOKAN_RETRY_CREATE 1024
 
 // used in DOKAN_START->DeviceType
 #define DOKAN_DISK_FILE_SYSTEM 0
@@ -352,6 +353,9 @@ typedef struct _EVENT_INFORMATION {
 #define DOKAN_EVENT_MOUNT_MANAGER 8
 #define DOKAN_EVENT_CURRENT_SESSION 16
 #define DOKAN_EVENT_FILELOCK_USER_MODE 32
+#define DOKAN_EVENT_LOCK_DEBUG_ENABLED 64
+#define DOKAN_EVENT_ENABLE_OPLOCKS 256
+#define DOKAN_EVENT_LOG_OPLOCKS 2048
 
 typedef struct _EVENT_DRIVER_INFO {
   ULONG DriverVersion;

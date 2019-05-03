@@ -709,6 +709,15 @@ BOOL DokanStart(PDOKAN_INSTANCE Instance) {
   if (Instance->DokanOptions->Options & DOKAN_OPTION_FILELOCK_USER_MODE) {
     eventStart.Flags |= DOKAN_EVENT_FILELOCK_USER_MODE;
   }
+  if (Instance->DokanOptions->Options & DOKAN_OPTION_LOCK_DEBUG_ENABLED) {
+    eventStart.Flags |= DOKAN_EVENT_LOCK_DEBUG_ENABLED;
+  }
+ // if (Instance->DokanOptions->Options & DOKAN_OPTION_ENABLE_OPLOCKS) {
+    eventStart.Flags |= DOKAN_EVENT_ENABLE_OPLOCKS;
+ // }
+  if (Instance->DokanOptions->Options & DOKAN_OPTION_LOG_OPLOCKS) {
+    eventStart.Flags |= DOKAN_EVENT_LOG_OPLOCKS;
+  }
 
   memcpy_s(eventStart.MountPoint, sizeof(eventStart.MountPoint),
            Instance->MountPoint, sizeof(Instance->MountPoint));
